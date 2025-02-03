@@ -1,92 +1,115 @@
 import os
-import random
-import requests
+import sqlite3
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# Получаем токены из переменных окружения
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TMDB_API_KEY = os.getenv("TMDB_API_KEY")
+# Создаем базу данных SQLite
+def init_db():
+    conn = sqlite3.connect("notes.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            text TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-# Базовый URL для TMDb API
-TMDB_BASE_URL = "https://api.themoviedb.org/3"
+# Добавить заметку
+async def add_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    note_text = " ".join(context.args)
 
-# Сопоставление жанров с ID
-GENRE_MAP = {
-    "комедия": 35,
-    "фантастика": 878,
-    "боевик": 28,
-    "драма": 18,
-    "ужасы": 27,
-    "мелодрама": 10749,
-}
+    if not note_text:
+        await update.message.reply_text("Укажите текст заметки! Например: /add_note Покупки на завтра.")
+        return
+
+    conn = sqlite3.connect("notes.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO notes (user_id, text) VALUES (?, ?)", (user_id, note_text))
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text(f"Заметка добавлена: {note_text}")
+
+# Показать все заметки
+async def show_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+
+    conn = sqlite3.connect("notes.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, text FROM notes WHERE user_id = ?", (user_id,))
+    notes = cursor.fetchall()
+    conn.close()
+
+    if not notes:
+        await update.message.reply_text("У вас нет заметок.")
+        return
+
+    notes_list = "\n".join([f"{note[0]}. {note[1]}" for note in notes])
+    await update.message.reply_text(f"📋 Ваши заметки:\n{notes_list}")
+
+# Удалить заметку
+async def delete_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    try:
+        note_id = int(context.args[0])
+
+        conn = sqlite3.connect("notes.db")
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM notes WHERE id = ? AND user_id = ?", (note_id, user_id))
+        conn.commit()
+        conn.close()
+
+        if cursor.rowcount > 0:
+            await update.message.reply_text(f"Заметка с ID {note_id} удалена.")
+        else:
+            await update.message.reply_text("Заметка не найдена.")
+    except Exception as e:
+        await update.message.reply_text("Ошибка! Используйте формат: /delete_note <номер>")
+
+# Очистить все заметки
+async def clear_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+
+    conn = sqlite3.connect("notes.db")
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM notes WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text("Все ваши заметки удалены.")
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привет! Я помогу тебе найти фильмы или сериалы. "
-        "Используй /find_movie <жанр>, чтобы найти фильм по жанру, или /recommend для случайной рекомендации."
+        "Привет! Я помогу вам управлять заметками. "
+        "Используйте следующие команды:\n"
+        "/add_note <текст> — добавить заметку\n"
+        "/show_notes — показать все заметки\n"
+        "/delete_note <номер> — удалить заметку\n"
+        "/clear_notes — очистить все заметки"
     )
-
-# Команда /find_movie
-async def find_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    genre_name = " ".join(context.args).lower()
-    if not genre_name:
-        await update.message.reply_text("Укажите жанр! Например: /find_movie комедия")
-        return
-
-    # Получаем ID жанра
-    genre_id = GENRE_MAP.get(genre_name)
-    if not genre_id:
-        await update.message.reply_text("Неизвестный жанр. Попробуйте другой.")
-        return
-
-    # Запрос к TMDb API
-    url = f"{TMDB_BASE_URL}/discover/movie"
-    params = {
-        "api_key": TMDB_API_KEY,
-        "with_genres": genre_id,
-        "language": "ru-RU",
-    }
-    response = requests.get(url, params=params)
-    data = response.json()
-
-    if data.get("results"):
-        movie = random.choice(data["results"])
-        title = movie.get("title", "Название неизвестно")
-        year = movie.get("release_date", "Год неизвестен")[:4]
-        await update.message.reply_text(f"🎬 Фильм: {title} ({year})")
-    else:
-        await update.message.reply_text("Фильмов такого жанра не найдено.")
-
-# Команда /recommend
-async def recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Запрос к TMDb API для популярных фильмов
-    url = f"{TMDB_BASE_URL}/movie/popular"
-    params = {
-        "api_key": TMDB_API_KEY,
-        "language": "ru-RU",
-    }
-    response = requests.get(url, params=params)
-    data = response.json()
-
-    if data.get("results"):
-        movie = random.choice(data["results"])
-        title = movie.get("title", "Название неизвестно")
-        year = movie.get("release_date", "Год неизвестен")[:4]
-        await update.message.reply_text(f"🌟 Рекомендация: {title} ({year})")
-    else:
-        await update.message.reply_text("Не удалось найти рекомендацию.")
 
 # Основная функция
 def main():
+    # Инициализируем базу данных
+    init_db()
+
+    # Получаем токен из переменных окружения
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
     # Создаем приложение
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     # Регистрируем обработчики команд
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("find_movie", find_movie))
-    application.add_handler(CommandHandler("recommend", recommend))
+    application.add_handler(CommandHandler("add_note", add_note))
+    application.add_handler(CommandHandler("show_notes", show_notes))
+    application.add_handler(CommandHandler("delete_note", delete_note))
+    application.add_handler(CommandHandler("clear_notes", clear_notes))
 
     # Запускаем бота
     print("Бот запущен...")
